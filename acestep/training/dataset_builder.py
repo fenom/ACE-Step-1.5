@@ -289,8 +289,11 @@ class DatasetBuilder:
                         sample.keyscale = meta['key']
                     if meta.get('caption'):
                         sample.caption = meta['caption']
-                        sample.labeled = True  # Mark as labeled if caption exists
+                        sample.labeled = True
                     csv_count += 1
+                    logger.debug(f"Applied CSV metadata to: {sample.filename}")
+                elif csv_metadata:
+                    logger.debug(f"No CSV match for: '{sample.filename}'")
 
                 self.samples.append(sample)
             except Exception as e:
@@ -391,6 +394,7 @@ class DatasetBuilder:
 
                         if entry:
                             metadata[filename] = entry
+                            logger.debug(f"CSV entry: '{filename}' -> {entry}")
 
                 logger.info(f"Loaded {len(metadata)} entries from CSV: {csv_path}")
 
@@ -602,6 +606,7 @@ class DatasetBuilder:
         format_lyrics: bool = False,
         transcribe_lyrics: bool = False,
         skip_metas: bool = False,
+        only_unlabeled: bool = False,
         progress_callback=None,
     ) -> Tuple[List[AudioSample], str]:
         """Label all samples in the dataset.
@@ -611,7 +616,8 @@ class DatasetBuilder:
             llm_handler: LLM handler for caption generation
             format_lyrics: If True, use LLM to format user-provided lyrics
             transcribe_lyrics: If True, use LLM to transcribe lyrics from audio
-            skip_metas: If True, skip generating BPM/Key/TimeSig but still generate caption/genre
+            skip_metas: If True, skip generating BPM/Key/TimeSig
+            only_unlabeled: If True, only label samples without caption
             progress_callback: Optional callback for progress updates
 
         Returns:
@@ -620,15 +626,30 @@ class DatasetBuilder:
         if not self.samples:
             return [], "❌ No samples to label. Please scan a directory first."
 
+        # Filter samples if only_unlabeled
+        if only_unlabeled:
+            samples_to_label = [
+                (i, s) for i, s in enumerate(self.samples)
+                if not s.labeled or not s.caption
+            ]
+        else:
+            samples_to_label = [(i, s) for i, s in enumerate(self.samples)]
+
+        if not samples_to_label:
+            return self.samples, "✅ All samples already labeled"
+
         success_count = 0
         fail_count = 0
+        total = len(samples_to_label)
 
-        for i, sample in enumerate(self.samples):
+        for idx, (i, sample) in enumerate(samples_to_label):
             if progress_callback:
-                progress_callback(f"Labeling {i+1}/{len(self.samples)}: {sample.filename}")
+                progress_callback(f"Labeling {idx+1}/{total}: {sample.filename}")
 
             _, status = self.label_sample(
-                i, dit_handler, llm_handler, format_lyrics, transcribe_lyrics, skip_metas, progress_callback
+                i, dit_handler, llm_handler,
+                format_lyrics, transcribe_lyrics, skip_metas,
+                progress_callback
             )
 
             if "✅" in status:
@@ -636,9 +657,11 @@ class DatasetBuilder:
             else:
                 fail_count += 1
 
-        status_msg = f"✅ Labeled {success_count}/{len(self.samples)} samples"
+        status_msg = f"✅ Labeled {success_count}/{total} samples"
         if fail_count > 0:
             status_msg += f" ({fail_count} failed)"
+        if only_unlabeled:
+            status_msg += f" (unlabeled only, {len(self.samples)} total)"
 
         return self.samples, status_msg
     
